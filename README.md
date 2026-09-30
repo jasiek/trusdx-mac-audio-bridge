@@ -20,11 +20,18 @@ WSJT-X ──CAT────▶ /tmp/trusdx-cat (pseudo-terminal owned by TruSDX
 
 ## Install
 
-Requires the Xcode Command Line Tools and CMake (`brew install cmake`).
+Download `truSDX-Bridge-<version>.pkg` from the Releases page and open it.
+The package isn't signed yet, so macOS blocks it the first time: dismiss the
+warning, then click **Open Anyway** in System Settings → Privacy & Security.
+Installing restarts Core Audio, so other audio stops for a moment.
+
+To build from source instead (Xcode Command Line Tools + `brew install cmake`):
 
 ```sh
 scripts/install.sh    # builds, installs the driver (sudo, only if changed), launches the app
 ```
+
+Uninstall with `/Applications/TruSDXBridge.app/Contents/Resources/uninstall.sh`.
 
 **truSDX Bridge** lives in the menu bar as an antenna icon:
 
@@ -100,6 +107,12 @@ easily if driven too hard.
 
 ```sh
 cmake -S . -B build && cmake --build build -j && ctest --test-dir build
+scripts/package.sh 0.3.0    # universal unsigned installer in dist/
 ```
 
-`scripts/uninstall.sh` removes everything.
+CI (`.github/workflows/ci.yml`) builds, tests and packages every push and pull
+request; the `.pkg` is attached to the run as an artifact. To publish a release:
+
+```sh
+git tag v0.3.0 && git push origin v0.3.0
+```

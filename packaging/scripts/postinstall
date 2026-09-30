@@ -1,0 +1,14 @@
+#!/bin/sh
+# Runs as root after files are copied.
+
+# coreaudiod only scans for drivers at startup; launchd restarts it at once.
+killall coreaudiod 2>/dev/null
+
+# Start the menu bar app for whoever is logged in at the console.
+user=$(stat -f %Su /dev/console)
+if [ -n "$user" ] && [ "$user" != "root" ]; then
+    uid=$(id -u "$user")
+    sleep 2 # let coreaudiod publish the truSDX device first
+    launchctl asuser "$uid" sudo -u "$user" open -a /Applications/TruSDXBridge.app
+fi
+exit 0

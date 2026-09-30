@@ -33,6 +33,7 @@ struct BridgeStatus {
     bool audioConnected = false;
     bool transmitting = false;
     uint64_t frequencyHz = 0; // 0 until the radio has reported one
+    std::string radioProblem; // connected but not usable, e.g. firmware without audio streaming
     std::string error;        // fatal startup error, if any
 };
 
@@ -68,6 +69,8 @@ private:
     std::string CachedReply(const std::string& name);
     void SuppressErrorsFor(std::chrono::milliseconds d);
     const char* AudioModeCommand() const { return options_.speaker ? "UA1;" : "UA2;"; }
+    void SendAudioMode(const std::string& prefix = "");
+    bool WaitForAudio(std::chrono::milliseconds timeout);
     void LogStats();
 
     const Options options_;
@@ -103,6 +106,13 @@ private:
     std::mutex cacheMu_;
     std::map<std::string, std::string> cache_; // last reply per command name
     std::atomic<int64_t> suppressErrorsUntil_{0};
+
+    // Is the firmware actually streaming audio? (UA needs truSDX firmware 2.00t+)
+    std::atomic<bool> idAnswered_{false};
+    std::atomic<bool> audioRejected_{false}; // "?;" right after a UA command
+    std::atomic<int64_t> lastAudioMs_{0};
+    std::atomic<int64_t> lastUaSentMs_{0};
+    std::atomic<int64_t> initDoneMs_{0};
 
     std::atomic<uint64_t> rxBytes_{0};
     std::atomic<uint64_t> txBytes_{0};

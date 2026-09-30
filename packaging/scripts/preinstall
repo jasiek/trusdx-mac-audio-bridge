@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs as root before files are copied. Quit a running bridge so it unkeys the
+# radio and releases the serial port; SIGTERM makes the app quit cleanly.
+pkill -TERM -x TruSDXBridge 2>/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x TruSDXBridge >/dev/null || break
+    sleep 0.5
+done
+pkill -KILL -x TruSDXBridge 2>/dev/null
+exit 0

@@ -12,6 +12,7 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
 endif()
 
 set(CODESIGN_ID "-" CACHE STRING "codesign identity ('-' = ad-hoc)")
+set(TRUSDX_VERSION ${PROJECT_VERSION} CACHE STRING "version stamped into the bundles")
 
 add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
@@ -19,16 +20,21 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
 include(ExternalProject)
 set(LIBASPL_PREFIX ${CMAKE_BINARY_DIR}/libASPL-prefix)
+set(LIBASPL_SOURCE ${CMAKE_BINARY_DIR}/libASPL-src)
+# "arm64;x86_64" would be split into separate arguments; pass it '|'-separated.
+string(REPLACE ";" "|" LIBASPL_ARCHS "${CMAKE_OSX_ARCHITECTURES}")
 ExternalProject_Add(libASPL_ext
   GIT_REPOSITORY https://github.com/gavv/libASPL.git
   GIT_TAG v3.1.2
   GIT_SHALLOW TRUE
+  SOURCE_DIR ${LIBASPL_SOURCE}
   INSTALL_DIR ${LIBASPL_PREFIX}
+  LIST_SEPARATOR |
   CMAKE_ARGS
     -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-    -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+    -DCMAKE_OSX_ARCHITECTURES=${LIBASPL_ARCHS}
     -DBUILD_TESTING=OFF
   BUILD_BYPRODUCTS ${LIBASPL_PREFIX}/lib/libASPL.a
   UPDATE_DISCONNECTED TRUE
@@ -60,7 +66,7 @@ set_target_properties(truSDX PROPERTIES
   MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/driver/Info.plist.in
   MACOSX_BUNDLE_BUNDLE_NAME truSDX
   MACOSX_BUNDLE_GUI_IDENTIFIER com.github.trusdx-mac-audio-bridge.driver
-  MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+  MACOSX_BUNDLE_SHORT_VERSION_STRING ${TRUSDX_VERSION}
   MACOSX_BUNDLE_COPYRIGHT "trusdx-mac-audio-bridge"
 )
 
@@ -82,9 +88,20 @@ set_target_properties(TruSDXBridge PROPERTIES
   MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/bridge/Info.plist.in
   MACOSX_BUNDLE_BUNDLE_NAME "truSDX Bridge"
   MACOSX_BUNDLE_GUI_IDENTIFIER com.github.trusdx-mac-audio-bridge.bridge
-  MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
-  MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+  MACOSX_BUNDLE_SHORT_VERSION_STRING ${TRUSDX_VERSION}
+  MACOSX_BUNDLE_BUNDLE_VERSION ${TRUSDX_VERSION}
 )
+
+# Ship the uninstaller and third-party notices inside the app (before signing).
+add_custom_command(TARGET TruSDXBridge POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_CONTENT_DIR:TruSDXBridge>/Resources"
+  COMMAND ${CMAKE_COMMAND} -E copy
+    ${CMAKE_CURRENT_SOURCE_DIR}/scripts/uninstall.sh
+    "$<TARGET_BUNDLE_CONTENT_DIR:TruSDXBridge>/Resources/uninstall.sh"
+  COMMAND ${CMAKE_COMMAND} -E copy
+    ${LIBASPL_SOURCE}/LICENSE
+    "$<TARGET_BUNDLE_CONTENT_DIR:TruSDXBridge>/Resources/libASPL-LICENSE.txt"
+  VERBATIM)
 
 foreach(target truSDX TruSDXBridge)
   add_custom_command(TARGET ${target} POST_BUILD

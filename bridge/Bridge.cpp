@@ -121,6 +121,16 @@ BridgeStatus Bridge::Status()
     if (fa.size() == 14) {
         status.frequencyHz = std::strtoull(fa.c_str() + 2, nullptr, 10);
     }
+    if (radioOk_ && initDoneMs_ > 0) {
+        const bool streaming = txActive_ || NowMs() - lastAudioMs_ < 2000;
+        if (!idAnswered_) {
+            status.radioProblem = "not answering CAT at 115200 baud (needs firmware 2.00t+)";
+        } else if (!streaming && audioRejected_) {
+            status.radioProblem = "firmware has no USB audio (needs 2.00t+)";
+        } else if (!streaming) {
+            status.radioProblem = "no audio stream from radio";
+        }
+    }
     std::lock_guard<std::mutex> lock(errorMu_);
     status.error = error_;
     return status;
@@ -213,6 +223,10 @@ bool Bridge::OpenRadio()
     forwardToClient_ = false;
     txWanted_ = false;
     txActive_ = false;
+    idAnswered_ = false;
+    audioRejected_ = false;
+    lastAudioMs_ = 0;
+    initDoneMs_ = 0;
     parser_.Reset();
     {
         std::lock_guard<std::mutex> lock(cacheMu_);
@@ -314,6 +328,8 @@ void Bridge::ReaderLoop()
         parser_.Feed(
             buf, size_t(n),
             [this](const uint8_t* samples, size_t count) {
+                lastAudioMs_.store(NowMs(), std::memory_order_relaxed);
+                audioRejected_.store(false, std::memory_order_relaxed);
                 if (!txActive_) {
                     rxRaw_.Push(samples, count);
                 }
@@ -334,6 +350,9 @@ void Bridge::HandleRadioFrame(const std::string& frame)
     }
     if (options_.verbose) {
         Log("cat -> radio reply %s", frame.c_str());
+    }
+    if (frame == "?;" && NowMs() - lastUaSentMs_ < 500) {
+        audioRejected_ = true;
     }
     if (!forwardToClient_) {
         return;
@@ -363,15 +382,45 @@ void Bridge::InitRadio()
             break;
         }
     }
+    idAnswered_ = answered;
     if (answered) {
         Log("radio: answering CAT (%s), frequency %s", CachedReply("ID").c_str(),
             CachedReply("FA").c_str());
     } else {
-        Log("radio: no reply to ID; - continuing anyway");
+        Log("radio: no reply to ID; at 115200 baud - truSDX firmware 2.00t or newer is needed");
     }
-    SendToRadio(AudioModeCommand());
-    SuppressErrorsFor(300ms);
+
+    SendAudioMode();
+    if (WaitForAudio(1500ms)) {
+        Log("radio: audio streaming active");
+    } else if (audioRejected_) {
+        Log("radio: firmware rejected %s - CAT works, but audio needs truSDX firmware 2.00t+",
+            AudioModeCommand());
+    } else {
+        Log("radio: no audio stream after %s - will keep retrying", AudioModeCommand());
+    }
+    initDoneMs_ = NowMs();
     forwardToClient_ = true;
+}
+
+void Bridge::SendAudioMode(const std::string& prefix)
+{
+    lastUaSentMs_ = NowMs();
+    SendToRadio(prefix + AudioModeCommand());
+    SuppressErrorsFor(300ms);
+}
+
+bool Bridge::WaitForAudio(std::chrono::milliseconds timeout)
+{
+    const int64_t since = NowMs();
+    const auto deadline = Clock::now() + timeout;
+    while (Clock::now() < deadline && !sessionStop_ && !radioDead_) {
+        if (lastAudioMs_ >= since) {
+            return true;
+        }
+        std::this_thread::sleep_for(50ms);
+    }
+    return lastAudioMs_ >= since;
 }
 
 void Bridge::WriterLoop()
@@ -384,7 +433,10 @@ void Bridge::WriterLoop()
     Clock::time_point txStart;
     Clock::time_point streamStart;
     double sent = 0;
+    size_t txAudio = 0;  // samples of app audio sent this transmission
+    size_t txFiller = 0; // silence sent because app audio wasn't there
     std::vector<float> scratch(4096);
+    std::vector<uint8_t> txChunk(4096); // up to ~0.36 s of catch-up per write
 
     while (!sessionStop_ && !radioDead_) {
         const bool want = txWanted_;
@@ -392,6 +444,8 @@ void Bridge::WriterLoop()
         if (want && !tx) {
             txIn_.Clear();
             txResampler.Reset();
+            audio_.TxPeak(); // reset
+            txAudio = txFiller = 0;
             SendToRadio("TX0;US");
             tx = true;
             streaming = false;
@@ -403,11 +457,16 @@ void Bridge::WriterLoop()
             tcdrain(serialFd_);
             std::this_thread::sleep_for(80ms);
             // Repeat RX; (harmless if already receiving) and restore streaming mode.
-            SendToRadio(std::string("RX;") + AudioModeCommand());
-            SuppressErrorsFor(300ms);
+            SendAudioMode("RX;");
             tx = false;
             txActive_ = false;
-            Log("ptt: RX");
+            const double keyed = streaming
+                ? std::chrono::duration<double>(Clock::now() - streamStart).count()
+                : 0.0;
+            Log("ptt: RX (keyed %.1f s: sent %.1f s audio + %.1f s filler, link %.0f B/s "
+                "of %.0f, app peak %.2f)",
+                keyed, txAudio / kRadioTxRate, txFiller / kRadioTxRate,
+                keyed > 0 ? (txAudio + txFiller) / keyed : 0.0, kRadioTxRate, audio_.TxPeak());
         }
 
         std::deque<std::string> cmds;
@@ -424,6 +483,17 @@ void Bridge::WriterLoop()
         }
 
         if (!tx) {
+            // Receive audio stopped (e.g. the radio was power-cycled while USB stayed up):
+            // ask for the stream again, at most every few seconds.
+            const int64_t nowMs = NowMs();
+            if (nowMs - lastAudioMs_ > 2000 && nowMs - lastUaSentMs_ > 5000) {
+                if (options_.verbose || lastAudioMs_ > 0) {
+                    Log("radio: no receive audio for %.0f s - re-sending %s",
+                        (nowMs - lastAudioMs_) / 1000.0, AudioModeCommand());
+                }
+                SendAudioMode();
+            }
+
             std::unique_lock<std::mutex> lock(queueMu_);
             queueCv_.wait_for(lock, 20ms, [&] {
                 return !queue_.empty() || txWanted_ != tx || sessionStop_;
@@ -456,17 +526,25 @@ void Bridge::WriterLoop()
         }
 
         // Pace to the radio's 11520 Hz rate; the link itself carries exactly that.
+        // USB-serial writes block for a fixed overhead on top of the wire time, so
+        // a late write must be followed by a bigger one or the link never catches up.
         const double due =
             std::chrono::duration<double>(now - streamStart).count() * kRadioTxRate + kTxLeadBytes;
-        const size_t count = size_t(std::clamp(due - sent, 0.0, 256.0));
-        if (count == 0) {
+        const size_t count = size_t(std::clamp(due - sent, 0.0, double(txChunk.size())));
+        if (count < 64) {
             std::this_thread::sleep_for(2ms);
             continue;
         }
-        uint8_t out[256];
+        uint8_t* out = txChunk.data();
         for (size_t i = 0; i < count; ++i) {
             float y;
-            out[i] = txResampler.Pop(&y) ? FloatToU8(y) : 128; // underrun: silence
+            if (txResampler.Pop(&y)) {
+                out[i] = FloatToU8(y);
+                ++txAudio;
+            } else {
+                out[i] = 128; // underrun: silence
+                ++txFiller;
+            }
         }
         if (!WriteAll(serialFd_, out, count)) {
             radioDead_ = true;

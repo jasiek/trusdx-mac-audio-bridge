@@ -1,0 +1,62 @@
+name: CI
+
+# Every push and PR: universal build, unit tests, unsigned .pkg as a workflow artifact.
+# Tags like v0.3.0: the same, plus a GitHub Release with the .pkg attached.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # create releases on tags
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build, test and package
+        run: scripts/package.sh "${{ steps.version.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: truSDX-Bridge-${{ steps.version.outputs.version }}
+          path: dist/*.pkg
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          **Unsigned build.** macOS will refuse to open it at first:
+          open the .pkg, dismiss the warning, then go to System Settings →
+          Privacy & Security and click **Open Anyway**.
+
+          Installs the `truSDX` audio device (`/Library/Audio/Plug-Ins/HAL`) and the
+          truSDX Bridge menu bar app (`/Applications`). Installing restarts Core Audio,
+          so other audio briefly stops. Uninstall with
+          `/Applications/TruSDXBridge.app/Contents/Resources/uninstall.sh`.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/*.pkg \
+            --title "truSDX Bridge ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md \
+            --generate-notes

@@ -276,7 +276,7 @@ NSString* LogPath()
         symbol = @"antenna.radiowaves.left.and.right.slash";
     } else if (status.transmitting) {
         tint = NSColor.systemRedColor;
-    } else if (!status.radioConnected || !status.audioConnected) {
+    } else if (!status.radioConnected || !status.audioConnected || !status.radioProblem.empty()) {
         tint = NSColor.systemOrangeColor;
     }
     NSImage* image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:@"truSDX Bridge"];
@@ -293,7 +293,9 @@ NSString* LogPath()
         _audioLine.hidden = YES;
     } else {
         NSString* radio = @"Radio: waiting for USB…";
-        if (status.radioConnected) {
+        if (status.radioConnected && !status.radioProblem.empty()) {
+            radio = [NSString stringWithFormat:@"Radio: %s", status.radioProblem.c_str()];
+        } else if (status.radioConnected) {
             radio = status.frequencyHz
                 ? [NSString stringWithFormat:@"Radio: %.3f MHz", status.frequencyHz / 1e6]
                 : @"Radio: connected";
@@ -342,6 +344,20 @@ int main(int argc, char** argv)
         app.activationPolicy = NSApplicationActivationPolicyAccessory;
         AppDelegate* delegate = [[AppDelegate alloc] initWithOptions:options];
         app.delegate = delegate;
+
+        // Quit cleanly on SIGTERM/SIGINT (installer, logout, kill) so the radio is unkeyed.
+        NSMutableArray* signalSources = [NSMutableArray array];
+        for (int sig : {SIGTERM, SIGINT}) {
+            std::signal(sig, SIG_IGN);
+            dispatch_source_t source = dispatch_source_create(
+                DISPATCH_SOURCE_TYPE_SIGNAL, uintptr_t(sig), 0, dispatch_get_main_queue());
+            dispatch_source_set_event_handler(source, ^{
+                [NSApp terminate:nil];
+            });
+            dispatch_resume(source);
+            [signalSources addObject:source];
+        }
+
         [app run];
     }
     return 0;
