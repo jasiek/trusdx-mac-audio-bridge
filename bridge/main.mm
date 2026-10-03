@@ -294,11 +294,18 @@ NSString* LogPath()
             attributes:@{NSLinkAttributeName : licenseURL,
                          NSFontAttributeName : [NSFont systemFontOfSize:NSFont.smallSystemFontSize]}]];
     }
-    [NSApp activateIgnoringOtherApps:YES];
-    [NSApp orderFrontStandardAboutPanelWithOptions:@{
+    NSMutableDictionary* panelOptions = [@{
         NSAboutPanelOptionApplicationName : @"truSDX Bridge",
         NSAboutPanelOptionCredits : formattedCredits
-    }];
+    } mutableCopy];
+    // Load directly from the bundle instead of relying on the cached application icon.
+    NSURL* iconURL = [NSBundle.mainBundle URLForResource:@"AppIcon" withExtension:@"icns"];
+    NSImage* icon = iconURL ? [[NSImage alloc] initWithContentsOfURL:iconURL] : nil;
+    if (icon) {
+        panelOptions[NSAboutPanelOptionApplicationIcon] = icon;
+    }
+    [NSApp activateIgnoringOtherApps:YES];
+    [NSApp orderFrontStandardAboutPanelWithOptions:panelOptions];
 }
 
 - (void)menuWillOpen:(NSMenu*)menu
