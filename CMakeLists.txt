@@ -67,7 +67,7 @@ set_target_properties(truSDX PROPERTIES
   MACOSX_BUNDLE_BUNDLE_NAME truSDX
   MACOSX_BUNDLE_GUI_IDENTIFIER com.github.trusdx-mac-audio-bridge.driver
   MACOSX_BUNDLE_SHORT_VERSION_STRING ${TRUSDX_VERSION}
-  MACOSX_BUNDLE_COPYRIGHT "trusdx-mac-audio-bridge"
+  MACOSX_BUNDLE_COPYRIGHT "Copyright © 2026 Jan Szumiec. Licensed under the MIT License."
 )
 
 # ---- TruSDXBridge.app: menu bar app / daemon --------------------------------
@@ -76,11 +76,21 @@ add_library(bridge_core STATIC bridge/Protocol.cpp)
 target_include_directories(bridge_core PUBLIC bridge common)
 
 add_executable(TruSDXBridge MACOSX_BUNDLE
+  LICENSE
+  bridge/About.txt
+  bridge/Assets/AppIcon.icns
   bridge/main.mm
   bridge/Bridge.cpp
   bridge/AudioLink.cpp
   bridge/Ports.cpp
 )
+set_source_files_properties(bridge/About.txt bridge/Assets/AppIcon.icns LICENSE
+  PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+# Resource changes must also trigger the post-build signing step.
+set_property(TARGET TruSDXBridge APPEND PROPERTY LINK_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/bridge/About.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/bridge/Assets/AppIcon.icns"
+  "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 target_compile_options(TruSDXBridge PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
 target_link_libraries(TruSDXBridge PRIVATE
   bridge_core ${CORE_AUDIO} ${CORE_FOUNDATION} ${APPKIT} ${SERVICE_MANAGEMENT})
@@ -90,6 +100,7 @@ set_target_properties(TruSDXBridge PROPERTIES
   MACOSX_BUNDLE_GUI_IDENTIFIER com.github.trusdx-mac-audio-bridge.bridge
   MACOSX_BUNDLE_SHORT_VERSION_STRING ${TRUSDX_VERSION}
   MACOSX_BUNDLE_BUNDLE_VERSION ${TRUSDX_VERSION}
+  MACOSX_BUNDLE_COPYRIGHT "Copyright © 2026 Jan Szumiec. Licensed under the MIT License."
 )
 
 # Ship the uninstaller and third-party notices inside the app (before signing).

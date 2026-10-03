@@ -43,7 +43,8 @@ Uninstall with `/Applications/TruSDXBridge.app/Contents/Resources/uninstall.sh`.
 | antenna with slash | stopped |
 
 The menu shows the radio's frequency and has Start/Stop Bridge (⌘S),
-Radio Speaker On, Open at Login and Show Log (`~/Library/Logs/trusdx-bridge.log`).
+Radio Speaker On, Open at Login, Show Log (`~/Library/Logs/trusdx-bridge.log`)
+and About... (application information, copyright and licensing).
 Stopping the bridge releases the serial port, so WSJT-X or a firmware tool can
 use the radio directly again.
 
@@ -102,6 +103,13 @@ easily if driven too hard.
 - **Safety:** the bridge unkeys (`;RX;`) at startup, on exit and on disconnect,
   and whenever a transmission exceeds `--tx-timeout`. The truSDX device can
   never become the system default, so alerts can't go out over the air.
+
+## License
+
+Copyright © 2026 Jan Szumiec. Licensed under the [MIT License](LICENSE).
+The audio driver uses libASPL, copyright Victor Gaydov and contributors,
+also licensed under the MIT License. Both licenses are included in the app
+and linked from the About dialog.
 
 ## Development
 

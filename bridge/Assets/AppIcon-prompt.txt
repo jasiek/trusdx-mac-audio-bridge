@@ -1,0 +1,9 @@
+Created with the built-in image_gen tool.
+Reference: https://m.media-amazon.com/images/I/81Sb+lT0hZL._AC_SL1500_.jpg
+The reference photo is not distributed with the application.
+
+Use case: stylized-concept. Asset type: square macOS application icon. Create an original comic-style illustration using the attached NEW truSDX reference photo for subject geometry. Straight-on front view matching this reference, not an angled perspective. Center the entire orange rectangular radio in a square transparent canvas with safe margins, filling about 85% width. Preserve orange enclosure, four silver corner screws, cyan/yellow-on-dark display upper left, round black speaker grille upper right, large black circular tuning knob lower left, three small black buttons across the lower face, and short silver connector on the right side. Omit the long top cable for a clean icon silhouette. Bold dark outlines, chunky simplified shapes, flat comic cel shading, restrained highlights. Readable at small icon sizes. Text: only "(tr)uSDX" at top left; tiny display marks may be simplified. Omit other face labels to avoid clutter. Genuine transparent background, no white rectangle, no surroundings, no hands, no badge, no watermark. Friendly polished illustrated hardware icon, not a photograph.
+
+AppIcon.png is the generated source with transparency. AppIcon.icns contains
+16, 32, 128, 256, and 512 point representations at 1x and 2x, resized using
+macOS sips and packaged with iconutil.

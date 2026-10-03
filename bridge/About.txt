@@ -1,0 +1,4 @@
+truSDX Bridge is licensed under the MIT License.
+
+The audio driver uses libASPL, licensed under the MIT License.
+Copyright (c) Victor Gaydov and contributors.

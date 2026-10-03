@@ -185,6 +185,10 @@ NSString* LogPath()
     NSMenuItem* log = [menu addItemWithTitle:@"Show Log" action:@selector(showLog:) keyEquivalent:@"l"];
     log.target = self;
     [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem* about = [menu addItemWithTitle:@"About..."
+                                        action:@selector(showAbout:)
+                                 keyEquivalent:@""];
+    about.target = self;
     NSMenuItem* quit = [menu addItemWithTitle:@"Quit truSDX Bridge"
                                        action:@selector(terminate:)
                                 keyEquivalent:@"q"];
@@ -258,6 +262,43 @@ NSString* LogPath()
 - (void)showLog:(id)sender
 {
     [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:LogPath()]];
+}
+
+- (void)showAbout:(id)sender
+{
+    NSString* description =
+        @"Connects a (tr)uSDX radio to macOS applications such as WSJT-X, JS8Call, "
+         "and fldigi over one USB cable. Provides the truSDX audio device for "
+         "receive and transmit audio, plus a virtual serial port for CAT radio control.";
+    NSURL* noticesURL = [NSBundle.mainBundle URLForResource:@"About" withExtension:@"txt"];
+    NSString* notices = [NSString stringWithContentsOfURL:noticesURL
+                                                encoding:NSUTF8StringEncoding
+                                                   error:nil];
+    NSString* credits = notices.length
+        ? [NSString stringWithFormat:@"%@\n\n%@", description, notices]
+        : description;
+    NSMutableAttributedString* formattedCredits = [[NSMutableAttributedString alloc]
+        initWithString:credits
+        attributes:@{NSFontAttributeName : [NSFont systemFontOfSize:NSFont.smallSystemFontSize]}];
+    NSURL* projectLicenseURL = [NSBundle.mainBundle URLForResource:@"LICENSE" withExtension:nil];
+    if (projectLicenseURL) {
+        [formattedCredits appendAttributedString:[[NSAttributedString alloc]
+            initWithString:@"\nRead the truSDX Bridge MIT license"
+            attributes:@{NSLinkAttributeName : projectLicenseURL,
+                         NSFontAttributeName : [NSFont systemFontOfSize:NSFont.smallSystemFontSize]}]];
+    }
+    NSURL* licenseURL = [NSBundle.mainBundle URLForResource:@"libASPL-LICENSE" withExtension:@"txt"];
+    if (licenseURL) {
+        [formattedCredits appendAttributedString:[[NSAttributedString alloc]
+            initWithString:@"\nRead the libASPL MIT license"
+            attributes:@{NSLinkAttributeName : licenseURL,
+                         NSFontAttributeName : [NSFont systemFontOfSize:NSFont.smallSystemFontSize]}]];
+    }
+    [NSApp activateIgnoringOtherApps:YES];
+    [NSApp orderFrontStandardAboutPanelWithOptions:@{
+        NSAboutPanelOptionApplicationName : @"truSDX Bridge",
+        NSAboutPanelOptionCredits : formattedCredits
+    }];
 }
 
 - (void)menuWillOpen:(NSMenu*)menu
