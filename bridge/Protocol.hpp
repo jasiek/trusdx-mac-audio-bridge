@@ -6,7 +6,7 @@
 // (https://dl2man.de/5-trusdx-details/):
 //   UA0; / UA1; / UA2;  audio streaming off / on with speaker / on, speaker muted
 //   US<u8 samples>;     receive audio, 8-bit unsigned, ~7.8 kHz
-//   TX0; US<samples>    transmit, host streams 8-bit audio at 11520 Hz
+//   TX0; <samples>      transmit, host streams 8-bit audio at 11520 Hz
 //   ;RX;                end the stream and return to receive
 // A ';' inside the audio would end the stream, so samples never use 0x3B.
 
@@ -27,8 +27,9 @@ inline float U8ToFloat(uint8_t v)
 
 inline uint8_t FloatToU8(float x)
 {
-    long v = std::lrintf(x * 127.0f) + 128;
-    v = v < 0 ? 0 : (v > 255 ? 255 : v);
+    // Reference: capture signed 16-bit PCM, then 128 + sample // 256.
+    const float pcm = std::fmax(-32768.0f, std::fmin(32767.0f, x * 32768.0f));
+    const long v = long(std::floor(std::trunc(pcm) / 256.0f)) + 128;
     return v == ';' ? uint8_t(':') : uint8_t(v);
 }
 
@@ -117,14 +118,11 @@ enum class ClientAction {
     Forward,
     PttOn,
     PttOff,
-    Drop,
+    LocalId,
 };
 
 // What to do with a command from the CAT client.
 ClientAction ClassifyClientCommand(const std::string& cmd);
-
-// True for a bare query like "FA;" or "IF;".
-bool IsQuery(const std::string& cmd);
 
 // Two-letter command name ("FA" for "FA00014074000;").
 std::string CommandName(const std::string& frame);
@@ -132,7 +130,9 @@ std::string CommandName(const std::string& frame);
 // Rejects frames that are really stray audio bytes.
 bool IsPlausibleCatFrame(const std::string& frame);
 
-// Returns an IF reply with its TX/RX status digit set.
-std::string WithTxFlag(const std::string& ifReply, bool tx);
+// Status from confirmed RX state, with the bridge's commanded PTT.
+// Unsupported commands and missing state return ?; without touching serial audio.
+std::string CachedStatusReply(const std::string& cmd, const std::string& frequency,
+    const std::string& mode, const std::string& info, bool transmitting);
 
 } // namespace trusdx

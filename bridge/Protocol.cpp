@@ -4,25 +4,17 @@ namespace trusdx {
 
 ClientAction ClassifyClientCommand(const std::string& cmd)
 {
-    // Hamlib sends TX; / TX0; (mic) / TX1; (data) for PTT; the truSDX keys on TX0;
-    // and needs the audio stream opened, so all of them go through the bridge.
-    // TX2; (tune) carries no audio and goes to the radio as-is.
-    if (cmd == "TX;" || cmd == "TX0;" || cmd == "TX1;") {
+    // ID is local; TX/RX commands preserve the client's PTT variant.
+    if (cmd.compare(0, 2, "ID") == 0) {
+        return ClientAction::LocalId;
+    }
+    if (cmd.compare(0, 2, "TX") == 0) {
         return ClientAction::PttOn;
     }
-    if (cmd == "RX;") {
+    if (cmd.compare(0, 2, "RX") == 0) {
         return ClientAction::PttOff;
     }
-    // The bridge owns audio streaming; a client toggling it would break the stream.
-    if (cmd.compare(0, 2, "UA") == 0 || cmd.compare(0, 2, "US") == 0) {
-        return ClientAction::Drop;
-    }
     return ClientAction::Forward;
-}
-
-bool IsQuery(const std::string& cmd)
-{
-    return cmd.size() == 3 && cmd[2] == ';';
 }
 
 std::string CommandName(const std::string& frame)
@@ -47,15 +39,25 @@ bool IsPlausibleCatFrame(const std::string& frame)
     return true;
 }
 
-std::string WithTxFlag(const std::string& ifReply, bool tx)
+std::string CachedStatusReply(const std::string& cmd, const std::string& frequency,
+    const std::string& mode, const std::string& info, bool transmitting)
 {
-    // TS-480 IF reply: "IF" freq(11) step(5) rit(5) ritOn xitOn bank ch(2) TX/RX mode ...
-    constexpr size_t kTxFlag = 2 + 11 + 5 + 5 + 1 + 1 + 1 + 2; // Hamlib reads info[28]
-    std::string out = ifReply;
-    if (out.compare(0, 2, "IF") == 0 && out.size() > kTxFlag + 1) {
-        out[kTxFlag] = tx ? '1' : '0';
+    const bool haveFrequency = frequency.size() == 14
+        && frequency.compare(0, 2, "FA") == 0 && frequency.back() == ';'
+        && frequency.find_first_not_of("0123456789", 2) == 13;
+    const bool haveMode = mode.size() == 4 && mode.compare(0, 2, "MD") == 0
+        && mode[2] >= '1' && mode[2] <= '5' && mode[3] == ';';
+    if (cmd == "FA;" && haveFrequency) return frequency;
+    if (cmd == "MD;" && haveMode) return mode;
+    if (cmd == "IF;" && haveFrequency && haveMode && info.size() == 38
+        && info.compare(0, 2, "IF") == 0 && IsPlausibleCatFrame(info)) {
+        std::string reply = info;
+        reply.replace(2, 11, frequency, 2, 11);
+        reply[28] = transmitting ? '1' : '0'; // Bridge-commanded Kenwood IF PTT field.
+        reply[29] = mode[2];
+        return reply;
     }
-    return out;
+    return "?;";
 }
 
 } // namespace trusdx

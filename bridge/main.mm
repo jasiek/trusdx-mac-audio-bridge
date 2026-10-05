@@ -37,7 +37,7 @@ void Usage()
         "  --tx-gain X        scale transmit audio (default 1.0)\n"
         "  --tx-timeout SEC   force RX after this long keyed (default 180)\n"
         "  --rx-rate HZ       nominal radio receive sample rate (default 7812.5)\n"
-        "  -v, --verbose      log CAT traffic and stats\n");
+        "  -v, --verbose      log virtual CAT reads/writes, radio CAT and stats\n");
 }
 
 // Returns false (after printing usage) on a bad argument.
@@ -111,6 +111,7 @@ public:
     }
 
     bool Running() const { return bridge_ != nullptr; }
+    void SetVerbose(bool enabled) { if (bridge_) bridge_->SetVerbose(enabled); }
     trusdx::BridgeStatus Status() { return bridge_ ? bridge_->Status() : trusdx::BridgeStatus{}; }
 
 private:
@@ -121,6 +122,7 @@ private:
 
 NSString* const kAutoStartKey = @"StartBridgeAtLaunch";
 NSString* const kSpeakerKey = @"RadioSpeakerOn";
+NSString* const kVerboseKey = @"VerboseLogging";
 
 NSString* LogPath()
 {
@@ -141,6 +143,7 @@ NSString* LogPath()
     NSMenuItem* _toggle;
     NSMenuItem* _speaker;
     NSMenuItem* _login;
+    NSMenuItem* _verbose;
     NSTimer* _timer;
 }
 
@@ -155,7 +158,8 @@ NSString* LogPath()
 - (void)applicationDidFinishLaunching:(NSNotification*)note
 {
     NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
-    [defaults registerDefaults:@{kAutoStartKey : @YES, kSpeakerKey : @NO}];
+    [defaults registerDefaults:@{kAutoStartKey : @YES, kSpeakerKey : @NO, kVerboseKey : @NO}];
+    _options.verbose = _options.verbose || [defaults boolForKey:kVerboseKey];
 
     _item = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
 
@@ -182,6 +186,10 @@ NSString* LogPath()
     _speaker.target = self;
     _login = [menu addItemWithTitle:@"Open at Login" action:@selector(toggleLogin:) keyEquivalent:@""];
     _login.target = self;
+    _verbose = [menu addItemWithTitle:@"Verbose Logging"
+                              action:@selector(toggleVerbose:)
+                       keyEquivalent:@""];
+    _verbose.target = self;
     NSMenuItem* log = [menu addItemWithTitle:@"Show Log" action:@selector(showLog:) keyEquivalent:@"l"];
     log.target = self;
     [menu addItem:NSMenuItem.separatorItem];
@@ -256,6 +264,14 @@ NSString* LogPath()
         alert.informativeText = error.localizedDescription ?: @"Unknown error";
         [alert runModal];
     }
+    [self refresh];
+}
+
+- (void)toggleVerbose:(id)sender
+{
+    _options.verbose = !_options.verbose;
+    [NSUserDefaults.standardUserDefaults setBool:_options.verbose forKey:kVerboseKey];
+    _runner.SetVerbose(_options.verbose);
     [self refresh];
 }
 
@@ -364,6 +380,7 @@ NSString* LogPath()
     _login.state = SMAppService.mainAppService.status == SMAppServiceStatusEnabled
         ? NSControlStateValueOn
         : NSControlStateValueOff;
+    _verbose.state = _options.verbose ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 @end

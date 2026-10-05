@@ -47,28 +47,18 @@ static void TestParserSplitsAudioAndFrames()
     }
 }
 
-static void TestIfTxFlag()
-{
-    const std::string rx = "IF0001407400000000+000000000020000000;";
-    const std::string tx = WithTxFlag(rx, true);
-    CHECK(tx.size() == rx.size());
-    CHECK(tx[28] == '1');
-    CHECK(tx[29] == '2'); // mode digit (USB) untouched
-    CHECK(WithTxFlag(tx, false) == rx);
-    CHECK(WithTxFlag("FA00014074000;", true) == "FA00014074000;");
-}
-
 static void TestClientClassification()
 {
     CHECK(ClassifyClientCommand("TX;") == ClientAction::PttOn);
     CHECK(ClassifyClientCommand("TX0;") == ClientAction::PttOn);
     CHECK(ClassifyClientCommand("TX1;") == ClientAction::PttOn);
     CHECK(ClassifyClientCommand("RX;") == ClientAction::PttOff);
-    CHECK(ClassifyClientCommand("TX2;") == ClientAction::Forward);
-    CHECK(ClassifyClientCommand("UA1;") == ClientAction::Drop);
+    CHECK(ClassifyClientCommand("TX2;") == ClientAction::PttOn);
+    CHECK(ClassifyClientCommand("UA1;") == ClientAction::Forward);
     CHECK(ClassifyClientCommand("FA00007074000;") == ClientAction::Forward);
-    CHECK(IsQuery("IF;"));
-    CHECK(!IsQuery("FA00007074000;"));
+    CHECK(ClassifyClientCommand("ID;") == ClientAction::LocalId);
+    CHECK(ClassifyClientCommand("US;") == ClientAction::Forward);
+    CHECK(ClassifyClientCommand("RM;") == ClientAction::Forward);
 
     CatSplitter splitter;
     std::vector<std::string> cmds;
@@ -86,6 +76,11 @@ static void TestSampleConversion()
     }
     CHECK(FloatToU8(2.0f) == 255);
     CHECK(FloatToU8(-2.0f) == 0);
+    for (int pcm = -32768; pcm <= 32767; ++pcm) {
+        int expected = int(std::floor(pcm / 256.0)) + 128;
+        if (expected == ';') expected = ':';
+        CHECK(FloatToU8(pcm / 32768.0f) == expected);
+    }
 }
 
 // Frequency (Hz) and RMS of a signal, via zero crossings.
@@ -175,8 +170,21 @@ static void TestTimelineRing()
 int main()
 {
     TestParserSplitsAudioAndFrames();
-    TestIfTxFlag();
     TestClientClassification();
+    const std::string info = "IF0001407400000000+000000000020000000;";
+    CHECK(CachedStatusReply("FA;", "FA00014074000;", "MD2;", info, true) == "FA00014074000;");
+    CHECK(CachedStatusReply("FA;", "FA0001x074000;", "MD2;", info, true) == "?;");
+    CHECK(CachedStatusReply("FA;", "", "MD2;", info, true) == "?;");
+    CHECK(CachedStatusReply("MD;", "FA00014074000;", "MD2;", info, true) == "MD2;");
+    std::string txInfo = info;
+    txInfo.replace(2, 11, "00014075000");
+    txInfo[28] = '1';
+    txInfo[29] = '1';
+    CHECK(CachedStatusReply("IF;", "FA00014075000;", "MD1;", info, true) == txInfo);
+    CHECK(CachedStatusReply("IF;", "FA00014074000;", "MD2;", "IFbad;", true) == "?;");
+    CHECK(CachedStatusReply("RM;", "FA00014074000;", "MD2;", info, true) == "?;");
+    CHECK(CachedStatusReply("FA00014075000;", "FA00014074000;", "MD2;", info, true) == "?;");
+    CHECK(CachedStatusReply("IF;", "FA00014074000;", "MD2;", info, false) == info);
     TestSampleConversion();
     TestResamplerRx();
     TestResamplerTx();

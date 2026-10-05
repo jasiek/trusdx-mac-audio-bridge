@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <string>
+#include <sys/types.h>
 
 namespace trusdx {
 
@@ -23,6 +25,8 @@ public:
 
     bool Open(const std::string& linkPath, std::string* error);
     int Fd() const { return master_; }
+    void SetVerbose(bool enabled) { verbose_ = enabled; }
+    ssize_t Read(void* data, size_t size);
 
     // Non-blocking; replies are dropped if nobody is reading the port.
     void Write(const std::string& data);
@@ -31,6 +35,7 @@ private:
     int master_ = -1;
     int slave_ = -1; // held open so the master never sees hang-up between clients
     std::string link_;
+    std::atomic<bool> verbose_{false};
 };
 
 } // namespace trusdx

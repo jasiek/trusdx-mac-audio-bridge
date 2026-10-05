@@ -1,4 +1,5 @@
 #include "Ports.hpp"
+#include "Log.hpp"
 
 #include <cerrno>
 #include <cstring>
@@ -124,10 +125,35 @@ bool CatPty::Open(const std::string& linkPath, std::string* error)
     return true;
 }
 
+ssize_t CatPty::Read(void* data, size_t size)
+{
+    const ssize_t count = read(master_, data, size);
+    if (count > 0 && verbose_) {
+        Log("virtual CAT <- client (%zd bytes) \"%s\"", count,
+            EscapeLogBytes(data, size_t(count)).c_str());
+    }
+    return count;
+}
+
 void CatPty::Write(const std::string& data)
 {
     if (master_ >= 0) {
-        (void)write(master_, data.data(), data.size());
+        const ssize_t count = write(master_, data.data(), data.size());
+        const int error = errno;
+        if (verbose_) {
+            if (count < 0) {
+                Log("virtual CAT -> client FAILED (%zu bytes) \"%s\": %s",
+                    data.size(), EscapeLogBytes(data.data(), data.size()).c_str(),
+                    std::strerror(error));
+            } else {
+                Log("virtual CAT -> client (%zd/%zu bytes) \"%s\"", count, data.size(),
+                    EscapeLogBytes(data.data(), size_t(count)).c_str());
+                if (size_t(count) < data.size()) {
+                    Log("virtual CAT: dropped %zu reply bytes after partial write",
+                        data.size() - size_t(count));
+                }
+            }
+        }
     }
 }
 

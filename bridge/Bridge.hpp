@@ -39,7 +39,7 @@ struct BridgeStatus {
 
 // Owns the radio's serial port and everything attached to it:
 //   serial reader  - splits radio bytes into CAT replies and receive audio
-//   serial writer  - sends CAT commands and, while transmitting, paced audio
+//   serial writer  - sends CAT commands and, while transmitting, capture-paced audio
 //   pty loop       - takes CAT commands from the client (WSJT-X/Hamlib)
 //   audio link     - moves audio to and from the truSDX Core Audio device
 class Bridge {
@@ -51,6 +51,7 @@ public:
     int Run(const std::atomic<bool>& stop);
 
     BridgeStatus Status();
+    void SetVerbose(bool enabled);
 
 private:
     using Clock = std::chrono::steady_clock;
@@ -67,13 +68,14 @@ private:
     bool SendToRadio(const std::string& data);
     void Enqueue(const std::string& cmd);
     std::string CachedReply(const std::string& name);
-    void SuppressErrorsFor(std::chrono::milliseconds d);
+    bool SendCatCommand(const std::string& cmd, bool transmitting);
     const char* AudioModeCommand() const { return options_.speaker ? "UA1;" : "UA2;"; }
     void SendAudioMode(const std::string& prefix = "");
     bool WaitForAudio(std::chrono::milliseconds timeout);
     void LogStats();
 
     const Options options_;
+    std::atomic<bool> verbose_{false};
 
     SpscRing<uint8_t> rxRaw_{1 << 15};
     SpscRing<float> txIn_{1 << 17};
@@ -105,14 +107,13 @@ private:
 
     std::mutex cacheMu_;
     std::map<std::string, std::string> cache_; // last reply per command name
-    std::atomic<int64_t> suppressErrorsUntil_{0};
 
     // Is the firmware actually streaming audio? (UA needs truSDX firmware 2.00t+)
-    std::atomic<bool> idAnswered_{false};
     std::atomic<bool> audioRejected_{false}; // "?;" right after a UA command
     std::atomic<int64_t> lastAudioMs_{0};
     std::atomic<int64_t> lastUaSentMs_{0};
     std::atomic<int64_t> initDoneMs_{0};
+    std::atomic<bool> recoveringAudio_{false}; // hide internal reset acknowledgements/errors
 
     std::atomic<uint64_t> rxBytes_{0};
     std::atomic<uint64_t> txBytes_{0};

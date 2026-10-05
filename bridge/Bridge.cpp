@@ -17,9 +17,7 @@ namespace {
 
 using namespace std::chrono_literals;
 
-constexpr size_t kTxPrefill = 1152;          // ~100 ms of 11520 Hz audio before streaming
-constexpr double kTxLeadBytes = 256;         // how far ahead of real time we keep the link
-constexpr auto kTxStartTimeout = 300ms;      // stream silence if the app is slow to start audio
+constexpr size_t kTxBlock = 512; // reference bridge default block_size at 11520 Hz
 
 int64_t NowMs()
 {
@@ -32,8 +30,18 @@ int64_t NowMs()
 
 Bridge::Bridge(const Options& options)
     : options_(options)
+    , verbose_(options.verbose)
     , audio_(rxRaw_, txIn_, txWanted_, options.rxRate)
 {
+    pty_.SetVerbose(options.verbose);
+}
+
+void Bridge::SetVerbose(bool enabled)
+{
+    pty_.SetVerbose(enabled);
+    if (verbose_.exchange(enabled) != enabled) {
+        Log("verbose logging: %s", enabled ? "on" : "off");
+    }
 }
 
 Bridge::~Bridge()
@@ -100,7 +108,7 @@ int Bridge::Run(const std::atomic<bool>& stop)
         audioOk_ = audio_.Healthy();
         radioOk_ = serialFd_ >= 0 && forwardToClient_;
 
-        if (options_.verbose && now >= nextStats) {
+        if (verbose_ && now >= nextStats) {
             LogStats();
             nextStats = now + 10s;
         }
@@ -123,9 +131,7 @@ BridgeStatus Bridge::Status()
     }
     if (radioOk_ && initDoneMs_ > 0) {
         const bool streaming = txActive_ || NowMs() - lastAudioMs_ < 2000;
-        if (!idAnswered_) {
-            status.radioProblem = "not answering CAT at 115200 baud (needs firmware 2.00t+)";
-        } else if (!streaming && audioRejected_) {
+        if (!streaming && audioRejected_) {
             status.radioProblem = "firmware has no USB audio (needs 2.00t+)";
         } else if (!streaming) {
             status.radioProblem = "no audio stream from radio";
@@ -157,7 +163,7 @@ void Bridge::PtyLoop()
         if (poll(&p, 1, 200) <= 0) {
             continue;
         }
-        const ssize_t n = read(pty_.Fd(), buf, sizeof buf);
+        const ssize_t n = pty_.Read(buf, sizeof buf);
         if (n > 0) {
             splitter.Feed(buf, size_t(n), [this](const std::string& cmd) { HandleClientCommand(cmd); });
         }
@@ -166,33 +172,11 @@ void Bridge::PtyLoop()
 
 void Bridge::HandleClientCommand(const std::string& cmd)
 {
-    if (options_.verbose) {
-        Log("cat <- client %s", cmd.c_str());
-    }
-    switch (ClassifyClientCommand(cmd)) {
-    case ClientAction::PttOn:
-        txWanted_ = true;
-        queueCv_.notify_all();
+    // The reference answers ID locally to meet Hamlib's RX;ID; turnaround.
+    // Every other command, including PTT, stays ordered in the writer queue.
+    if (ClassifyClientCommand(cmd) == ClientAction::LocalId) {
+        pty_.Write("ID020;");
         return;
-    case ClientAction::PttOff:
-        txWanted_ = false;
-        queueCv_.notify_all();
-        return;
-    case ClientAction::Drop:
-        return;
-    case ClientAction::Forward:
-        break;
-    }
-
-    // While keyed the radio is busy with our audio stream; answer polls from the
-    // last replies we saw instead of punching holes in the stream.
-    if (txActive_ && IsQuery(cmd)) {
-        const std::string name = CommandName(cmd);
-        std::string reply = CachedReply(name);
-        if (!reply.empty()) {
-            pty_.Write(name == "IF" ? WithTxFlag(reply, true) : reply);
-            return;
-        }
     }
     Enqueue(cmd);
 }
@@ -223,10 +207,10 @@ bool Bridge::OpenRadio()
     forwardToClient_ = false;
     txWanted_ = false;
     txActive_ = false;
-    idAnswered_ = false;
     audioRejected_ = false;
     lastAudioMs_ = 0;
     initDoneMs_ = 0;
+    recoveringAudio_ = false;
     parser_.Reset();
     {
         std::lock_guard<std::mutex> lock(cacheMu_);
@@ -258,8 +242,11 @@ void Bridge::CloseRadio()
     }
     if (!radioDead_) {
         // Unkey, stop streaming and give the speaker back.
-        SendToRadio(";RX;UA0;");
-        tcdrain(serialFd_);
+        SendCatCommand("RX;", txActive_);
+        SendCatCommand("UA0;", false);
+        // Give these short shutdown commands time to leave USB before close.
+        // Do not use the driver's potentially multi-second tcdrain here.
+        std::this_thread::sleep_for(20ms);
     }
     close(serialFd_);
     serialFd_ = -1;
@@ -295,9 +282,26 @@ std::string Bridge::CachedReply(const std::string& name)
     return it == cache_.end() ? std::string() : it->second;
 }
 
-void Bridge::SuppressErrorsFor(std::chrono::milliseconds d)
+bool Bridge::SendCatCommand(const std::string& cmd, bool transmitting)
 {
-    suppressErrorsUntil_ = NowMs() + d.count();
+    if (transmitting && ClassifyClientCommand(cmd) == ClientAction::PttOff) {
+        // A final 512-byte audio block takes 44.4 ms at 115200 8N1.
+        // Stop capture and allow it to finish, then separate the stream
+        // terminator from RX so firmware can leave its audio-input state.
+        // tcflush followed by a combined ;RX; was unreliable on 2.00x;
+        // tcdrain instead blocked the CH340/macOS path for ~3.3 seconds.
+        txWanted_ = false;
+        std::this_thread::sleep_for(60ms);
+        if (!SendToRadio(";")) {
+            return false;
+        }
+        std::this_thread::sleep_for(10ms);
+        return SendToRadio(cmd);
+    }
+    // The reader delivers replies independently. Draining here can stall the
+    // writer for seconds on macOS even after the radio has answered, leaving
+    // the client's next command queued until its CAT timeout expires.
+    return SendToRadio(cmd);
 }
 
 void Bridge::ReaderLoop()
@@ -348,20 +352,13 @@ void Bridge::HandleRadioFrame(const std::string& frame)
         std::lock_guard<std::mutex> lock(cacheMu_);
         cache_[name] = frame;
     }
-    if (options_.verbose) {
-        Log("cat -> radio reply %s", frame.c_str());
+    if (verbose_) {
+        Log("radio CAT <- radio %s", frame.c_str());
     }
     if (frame == "?;" && NowMs() - lastUaSentMs_ < 500) {
         audioRejected_ = true;
     }
-    if (!forwardToClient_) {
-        return;
-    }
-    // Echoes of the bridge's own streaming/PTT commands mean nothing to the client.
-    if (name == "UA" || name == "TX" || name == "RX") {
-        return;
-    }
-    if ((frame == "?;" || frame == "E;") && NowMs() < suppressErrorsUntil_) {
+    if (!forwardToClient_ || (recoveringAudio_ && (name == "UA" || frame == "?;"))) {
         return;
     }
     pty_.Write(frame);
@@ -369,35 +366,44 @@ void Bridge::HandleRadioFrame(const std::string& frame)
 
 void Bridge::InitRadio()
 {
-    // ";" ends any audio stream a previous session left open, RX; unkeys.
-    SendToRadio(";RX;");
-    std::this_thread::sleep_for(100ms);
-
-    bool answered = false;
-    for (int i = 0; i < 12 && !sessionStop_ && !radioDead_; ++i) {
-        SendToRadio("ID;FA;");
-        std::this_thread::sleep_for(500ms);
-        if (!CachedReply("ID").empty()) {
-            answered = true;
-            break;
-        }
+    // The reference allows three seconds for boot, then sets USB and audio mode.
+    // Keep the native bridge's startup unkey in front of that same initialization.
+    const auto bootDeadline = Clock::now() + 3s;
+    while (Clock::now() < bootDeadline && !sessionStop_ && !radioDead_) {
+        std::this_thread::sleep_for(50ms);
     }
-    idAnswered_ = answered;
-    if (answered) {
-        Log("radio: answering CAT (%s), frequency %s", CachedReply("ID").c_str(),
-            CachedReply("FA").c_str());
-    } else {
-        Log("radio: no reply to ID; at 115200 baud - truSDX firmware 2.00t or newer is needed");
+    if (sessionStop_ || radioDead_) {
+        return;
     }
-
-    SendAudioMode();
+    SendAudioMode(";RX;MD2;");
     if (WaitForAudio(1500ms)) {
         Log("radio: audio streaming active");
     } else if (audioRejected_) {
         Log("radio: firmware rejected %s - CAT works, but audio needs truSDX firmware 2.00t+",
             AudioModeCommand());
     } else {
-        Log("radio: no audio stream after %s - will keep retrying", AudioModeCommand());
+        Log("radio: no audio stream after %s", AudioModeCommand());
+    }
+    // Read initial radio status before exposing the CAT endpoint to clients.
+    // These startup replies must not leak into a client's pending transaction.
+    for (const char* name : {"FA", "MD", "IF"}) {
+        {
+            std::lock_guard<std::mutex> lock(cacheMu_);
+            cache_.erase(name);
+        }
+        if (sessionStop_ || radioDead_ || !SendToRadio(std::string(name) + ";")) {
+            return;
+        }
+        // The firmware can reject IF when probes are sent back to back.
+        // Wait for each response before issuing the next startup query.
+        const auto cacheDeadline = Clock::now() + 500ms;
+        while (!sessionStop_ && !radioDead_ && Clock::now() < cacheDeadline
+            && CachedReply(name).empty()) {
+            std::this_thread::sleep_for(5ms);
+        }
+        if (CachedReply(name).empty()) {
+            Log("radio: no confirmed initial %s state", name);
+        }
     }
     initDoneMs_ = NowMs();
     forwardToClient_ = true;
@@ -407,7 +413,6 @@ void Bridge::SendAudioMode(const std::string& prefix)
 {
     lastUaSentMs_ = NowMs();
     SendToRadio(prefix + AudioModeCommand());
-    SuppressErrorsFor(300ms);
 }
 
 bool Bridge::WaitForAudio(std::chrono::milliseconds timeout)
@@ -429,82 +434,173 @@ void Bridge::WriterLoop()
 
     Resampler txResampler(kDeviceSampleRate / kRadioTxRate);
     bool tx = false;
-    bool streaming = false;
+    bool discardFirstBlock = false;
     Clock::time_point txStart;
-    Clock::time_point streamStart;
-    double sent = 0;
-    size_t txAudio = 0;  // samples of app audio sent this transmission
-    size_t txFiller = 0; // silence sent because app audio wasn't there
+    size_t txAudio = 0;
     std::vector<float> scratch(4096);
-    std::vector<uint8_t> txChunk(4096); // up to ~0.36 s of catch-up per write
+    std::vector<uint8_t> txBlock(kTxBlock);
+    int64_t rxSinceMs = NowMs();
+    int64_t lastRecoveryMs = NowMs() - 5000;
 
-    while (!sessionStop_ && !radioDead_) {
-        const bool want = txWanted_;
+    enum class Recovery { None, DisableAudio, EnableAudio, ReassertRx, WaitAudio };
+    Recovery recovery = Recovery::None;
+    int64_t recoveryDeadlineMs = 0;
+    int64_t recoveryAudioSinceMs = 0;
+    auto beginRecovery = [&](bool alreadyUnkeyed) {
+        recoveringAudio_ = true;
+        lastRecoveryMs = NowMs();
+        if (!alreadyUnkeyed) SendToRadio("RX;");
+        recovery = Recovery::DisableAudio;
+        recoveryDeadlineMs = NowMs() + 50;
+    };
+    auto canHandleDuringRecovery = [](const std::string& cmd) {
+        return cmd == "FA;" || cmd == "MD;" || cmd == "IF;" || cmd == "RX;";
+    };
+    auto replyFromCache = [&](const std::string& cmd) {
+        std::string reply;
+        {
+            std::lock_guard<std::mutex> lock(cacheMu_);
+            auto get = [&](const char* name) {
+                auto it = cache_.find(name);
+                return it == cache_.end() ? std::string() : it->second;
+            };
+            reply = CachedStatusReply(cmd, get("FA"), get("MD"), get("IF"), tx);
+        }
+        pty_.Write(reply);
+    };
 
-        if (want && !tx) {
+    auto sendCommand = [&](const std::string& cmd) {
+        const auto action = ClassifyClientCommand(cmd);
+        if (recovery != Recovery::None) {
+            // RX is already satisfied; do not let redundant unkeys delay polls.
+            if (cmd != "RX;") replyFromCache(cmd);
+            return;
+        }
+        if (tx && action != ClientAction::PttOff) {
+            // O; makes Hamlib fail IF polling. Repeated TX must not reset capture.
+            if (action != ClientAction::PttOn) replyFromCache(cmd);
+            return;
+        }
+        const bool endingTx = tx && action == ClientAction::PttOff;
+        // Hide any internal unkey error before its write can reach the reader.
+        if (endingTx) recoveringAudio_ = true;
+        if (verbose_) {
+            Log("radio CAT -> radio %s", cmd.c_str());
+        }
+        if (!SendCatCommand(cmd, tx)) {
+            return;
+        }
+        switch (action) {
+        case ClientAction::PttOn:
+            // Reference: restart capture and read/discard one 512-frame block.
             txIn_.Clear();
             txResampler.Reset();
-            audio_.TxPeak(); // reset
-            txAudio = txFiller = 0;
-            SendToRadio("TX0;US");
-            tx = true;
-            streaming = false;
+            discardFirstBlock = true;
+            audio_.TxPeak();
+            txAudio = 0;
             txStart = Clock::now();
+            tx = true;
+            txWanted_ = true;
             txActive_ = true;
             Log("ptt: TX");
-        } else if (!want && tx) {
-            SendToRadio(";RX;");
-            tcdrain(serialFd_);
-            std::this_thread::sleep_for(80ms);
-            // Repeat RX; (harmless if already receiving) and restore streaming mode.
-            SendAudioMode("RX;");
+            break;
+        case ClientAction::PttOff: {
+            const double keyed = tx
+                ? std::chrono::duration<double>(Clock::now() - txStart).count() : 0.0;
             tx = false;
+            txWanted_ = false;
             txActive_ = false;
-            const double keyed = streaming
-                ? std::chrono::duration<double>(Clock::now() - streamStart).count()
-                : 0.0;
-            Log("ptt: RX (keyed %.1f s: sent %.1f s audio + %.1f s filler, link %.0f B/s "
-                "of %.0f, app peak %.2f)",
-                keyed, txAudio / kRadioTxRate, txFiller / kRadioTxRate,
-                keyed > 0 ? (txAudio + txFiller) / keyed : 0.0, kRadioTxRate, audio_.TxPeak());
+            txIn_.Clear();
+            txResampler.Reset();
+            rxSinceMs = NowMs();
+            Log("ptt: RX (keyed %.1f s: sent %.1f s audio, link %.0f B/s of %.0f, app peak %.2f)",
+                keyed, txAudio / kRadioTxRate,
+                keyed > 0 ? txAudio / keyed : 0.0, kRadioTxRate, audio_.TxPeak());
+            if (endingTx) {
+                Log("radio: TX ended - resetting serial audio immediately");
+                beginRecovery(true);
+            }
+            break;
         }
+        case ClientAction::LocalId:
+        case ClientAction::Forward:
+            break;
+        }
+    };
 
-        std::deque<std::string> cmds;
+    while (!sessionStop_ && !radioDead_) {
+        // Like handle_cat(), process one complete command before each audio block.
+        std::string cmd;
         {
             std::lock_guard<std::mutex> lock(queueMu_);
-            cmds.swap(queue_);
-        }
-        for (const std::string& cmd : cmds) {
-            if (options_.verbose) {
-                Log("cat -> radio %s", cmd.c_str());
+            // Preserve command order: setters and another TX wait for the reset.
+            if (!queue_.empty() && (recovery == Recovery::None
+                    || canHandleDuringRecovery(queue_.front()))) {
+                cmd = queue_.front();
+                queue_.pop_front();
             }
-            // While streaming, ';' pauses the audio and "US" resumes it.
-            SendToRadio(tx ? ";" + cmd + "US" : cmd);
+        }
+        if (!cmd.empty()) {
+            sendCommand(cmd);
+        }
+        if (radioDead_) {
+            break;
         }
 
         if (!tx) {
-            // Receive audio stopped (e.g. the radio was power-cycled while USB stayed up):
-            // ask for the stream again, at most every few seconds.
             const int64_t nowMs = NowMs();
-            if (nowMs - lastAudioMs_ > 2000 && nowMs - lastUaSentMs_ > 5000) {
-                if (options_.verbose || lastAudioMs_ > 0) {
-                    Log("radio: no receive audio for %.0f s - re-sending %s",
-                        (nowMs - lastAudioMs_) / 1000.0, AudioModeCommand());
-                }
-                SendAudioMode();
+            if (recovery == Recovery::None && lastAudioMs_ > 0
+                && nowMs - lastAudioMs_ > 2000
+                && nowMs - rxSinceMs > 1000 && nowMs - lastRecoveryMs > 5000) {
+                Log("radio: no receive audio for %.0f s - resetting serial audio",
+                    (nowMs - lastAudioMs_) / 1000.0);
+                beginRecovery(false);
             }
-
+            // Advance reset deadlines without sleeping through CAT status polls.
+            // All serial writes stay here, so a queued TX cannot interrupt reset.
+            if (recovery != Recovery::None && nowMs >= recoveryDeadlineMs) {
+                switch (recovery) {
+                case Recovery::DisableAudio:
+                    SendToRadio("UA0;");
+                    recovery = Recovery::EnableAudio;
+                    recoveryDeadlineMs = NowMs() + 200;
+                    break;
+                case Recovery::EnableAudio:
+                    SendAudioMode();
+                    recovery = Recovery::ReassertRx;
+                    recoveryDeadlineMs = NowMs() + 50;
+                    break;
+                case Recovery::ReassertRx:
+                    recoveryAudioSinceMs = NowMs();
+                    SendToRadio("RX;");
+                    recovery = Recovery::WaitAudio;
+                    recoveryDeadlineMs = NowMs() + 500;
+                    break;
+                case Recovery::WaitAudio:
+                case Recovery::None:
+                    break;
+                }
+            }
+            if (recovery == Recovery::WaitAudio) {
+                const bool resumed = lastAudioMs_ >= recoveryAudioSinceMs;
+                if (resumed || NowMs() >= recoveryDeadlineMs) {
+                    Log(resumed ? "radio: receive audio recovered"
+                                : "radio: serial audio reset did not restore samples");
+                    recovery = Recovery::None;
+                    recoveringAudio_ = false;
+                }
+            }
             std::unique_lock<std::mutex> lock(queueMu_);
-            queueCv_.wait_for(lock, 20ms, [&] {
-                return !queue_.empty() || txWanted_ != tx || sessionStop_;
+            queueCv_.wait_for(lock, 1ms, [&] {
+                return sessionStop_ || (!queue_.empty() && (recovery == Recovery::None
+                    || canHandleDuringRecovery(queue_.front())));
             });
             continue;
         }
 
-        const auto now = Clock::now();
-        if (now - txStart > std::chrono::seconds(options_.txTimeoutSec)) {
+        if (Clock::now() - txStart > std::chrono::seconds(options_.txTimeoutSec)) {
             Log("ptt: transmit timeout (%d s) - forcing RX", options_.txTimeoutSec);
-            txWanted_ = false;
+            sendCommand("RX;");
             continue;
         }
 
@@ -514,50 +610,36 @@ void Bridge::WriterLoop()
                 txResampler.Push(scratch[i] * options_.txGain);
             }
         }
-
-        if (!streaming) {
-            if (txResampler.Available() < kTxPrefill && now - txStart < kTxStartTimeout) {
-                std::this_thread::sleep_for(2ms);
-                continue;
-            }
-            streaming = true;
-            streamStart = now;
-            sent = 0;
-        }
-
-        // Pace to the radio's 11520 Hz rate; the link itself carries exactly that.
-        // USB-serial writes block for a fixed overhead on top of the wire time, so
-        // a late write must be followed by a bigger one or the link never catches up.
-        const double due =
-            std::chrono::duration<double>(now - streamStart).count() * kRadioTxRate + kTxLeadBytes;
-        const size_t count = size_t(std::clamp(due - sent, 0.0, double(txChunk.size())));
-        if (count < 64) {
-            std::this_thread::sleep_for(2ms);
+        if (txResampler.Available() < kTxBlock) {
+            std::unique_lock<std::mutex> lock(queueMu_);
+            queueCv_.wait_for(lock, 1ms, [&] { return !queue_.empty() || sessionStop_; });
             continue;
         }
-        uint8_t* out = txChunk.data();
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < kTxBlock; ++i) {
             float y;
-            if (txResampler.Pop(&y)) {
-                out[i] = FloatToU8(y);
-                ++txAudio;
-            } else {
-                out[i] = 128; // underrun: silence
-                ++txFiller;
-            }
+            txResampler.Pop(&y);
+            txBlock[i] = FloatToU8(y);
         }
-        if (!WriteAll(serialFd_, out, count)) {
+        if (discardFirstBlock) {
+            discardFirstBlock = false;
+            continue;
+        }
+        // Capture at 11520 Hz paces the reference. Here the 48 kHz device feeds
+        // a resampler at that rate; write each available block, without filler.
+        if (!WriteAll(serialFd_, txBlock.data(), txBlock.size())) {
             radioDead_ = true;
             break;
         }
-        sent += double(count);
-        txBytes_ += count;
+        txAudio += txBlock.size();
+        txBytes_ += txBlock.size();
     }
 
     if (tx && !radioDead_) {
-        SendToRadio(";RX;");
+        SendCatCommand("RX;", true);
     }
+    txWanted_ = false;
     txActive_ = false;
+    recoveringAudio_ = false;
 }
 
 } // namespace trusdx
