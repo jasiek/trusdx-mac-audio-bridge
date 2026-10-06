@@ -52,6 +52,8 @@ public:
 
     BridgeStatus Status();
     void SetVerbose(bool enabled);
+    // Switches the radio's streaming mode (UA1/UA2) without reconnecting.
+    void SetSpeaker(bool on);
 
 private:
     using Clock = std::chrono::steady_clock;
@@ -69,13 +71,14 @@ private:
     void Enqueue(const std::string& cmd);
     std::string CachedReply(const std::string& name);
     bool SendCatCommand(const std::string& cmd, bool transmitting);
-    const char* AudioModeCommand() const { return options_.speaker ? "UA1;" : "UA2;"; }
+    const char* AudioModeCommand() const { return speaker_ ? "UA1;" : "UA2;"; }
     void SendAudioMode(const std::string& prefix = "");
     bool WaitForAudio(std::chrono::milliseconds timeout);
     void LogStats();
 
     const Options options_;
     std::atomic<bool> verbose_{false};
+    std::atomic<bool> speaker_{false};
 
     SpscRing<uint8_t> rxRaw_{1 << 15};
     SpscRing<float> txIn_{1 << 17};
@@ -92,7 +95,7 @@ private:
     std::string error_;
 
     // Per radio connection.
-    int serialFd_ = -1;
+    std::atomic<int> serialFd_{-1}; // the pty thread checks it in Enqueue
     std::string serialPath_;
     std::thread reader_;
     std::thread writer_;
@@ -114,9 +117,14 @@ private:
     std::atomic<int64_t> lastUaSentMs_{0};
     std::atomic<int64_t> initDoneMs_{0};
     std::atomic<bool> recoveringAudio_{false}; // hide internal reset acknowledgements/errors
+    std::atomic<bool> audioModeChanged_{false}; // speaker toggled; next reset applies it
 
     std::atomic<uint64_t> rxBytes_{0};
     std::atomic<uint64_t> txBytes_{0};
+
+    // Run thread only.
+    uint64_t statsLastRx_ = 0;  // rxBytes_ at the previous stats line
+    std::string lastOpenError_; // last "cannot open" error logged, to avoid repeats
 };
 
 } // namespace trusdx

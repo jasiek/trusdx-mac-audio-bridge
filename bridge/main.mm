@@ -9,6 +9,7 @@
 #import <ServiceManagement/ServiceManagement.h>
 
 #include <atomic>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -40,6 +41,24 @@ void Usage()
         "  -v, --verbose      log virtual CAT reads/writes, radio CAT and stats\n");
 }
 
+// Parses all of `text` as a finite number greater than zero.
+bool ParsePositive(const char* text, double* out)
+{
+    char* end = nullptr;
+    const double v = std::strtod(text, &end);
+    if (end == text || *end != '\0' || !std::isfinite(v) || v <= 0) {
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+void BadValue(const char* option, const char* text, const char* expected)
+{
+    std::fprintf(stderr, "TruSDXBridge: invalid %s value \"%s\" (expected %s)\n", option, text, expected);
+    Usage();
+}
+
 // Returns false (after printing usage) on a bad argument.
 bool ParseArgs(int argc, char** argv, trusdx::Options* options, bool* headless)
 {
@@ -61,11 +80,29 @@ bool ParseArgs(int argc, char** argv, trusdx::Options* options, bool* headless)
         } else if (arg == "--speaker") {
             options->speaker = true;
         } else if (arg == "--tx-gain") {
-            options->txGain = std::strtof(value(), nullptr);
+            const char* text = value();
+            double v;
+            if (!ParsePositive(text, &v)) {
+                BadValue("--tx-gain", text, "a number > 0");
+                return false;
+            }
+            options->txGain = static_cast<float>(v);
         } else if (arg == "--tx-timeout") {
-            options->txTimeoutSec = std::atoi(value());
+            const char* text = value();
+            double v;
+            if (!ParsePositive(text, &v) || v != std::floor(v) || v > 86400) {
+                BadValue("--tx-timeout", text, "whole seconds, 1-86400");
+                return false;
+            }
+            options->txTimeoutSec = static_cast<int>(v);
         } else if (arg == "--rx-rate") {
-            options->rxRate = std::strtod(value(), nullptr);
+            const char* text = value();
+            double v;
+            if (!ParsePositive(text, &v)) {
+                BadValue("--rx-rate", text, "a number > 0");
+                return false;
+            }
+            options->rxRate = v;
         } else if (arg == "-v" || arg == "--verbose") {
             options->verbose = true;
         } else if (arg.rfind("-psn_", 0) == 0) {
@@ -112,6 +149,7 @@ public:
 
     bool Running() const { return bridge_ != nullptr; }
     void SetVerbose(bool enabled) { if (bridge_) bridge_->SetVerbose(enabled); }
+    void SetSpeaker(bool on) { if (bridge_) bridge_->SetSpeaker(on); }
     trusdx::BridgeStatus Status() { return bridge_ ? bridge_->Status() : trusdx::BridgeStatus{}; }
 
 private:
@@ -244,10 +282,10 @@ NSString* LogPath()
 - (void)toggleSpeaker:(id)sender
 {
     NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
-    [defaults setBool:![defaults boolForKey:kSpeakerKey] forKey:kSpeakerKey];
-    if (_runner.Running()) {
-        [self startBridge]; // the streaming mode is chosen when the radio connects
-    }
+    const bool on = ![defaults boolForKey:kSpeakerKey];
+    [defaults setBool:on forKey:kSpeakerKey];
+    // Switch in place: restarting would replace the CAT pty under a connected client.
+    _runner.SetSpeaker(on || _options.speaker);
     [self refresh];
 }
 

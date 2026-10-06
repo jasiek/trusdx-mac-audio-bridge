@@ -2,6 +2,18 @@
 
 namespace trusdx {
 
+static bool IsFrequencyFrame(const std::string& f)
+{
+    return f.size() == 14 && f.compare(0, 2, "FA") == 0 && f.back() == ';'
+        && f.find_first_not_of("0123456789", 2) == 13;
+}
+
+static bool IsModeFrame(const std::string& f)
+{
+    return f.size() == 4 && f.compare(0, 2, "MD") == 0
+        && f[2] >= '1' && f[2] <= '5' && f[3] == ';';
+}
+
 ClientAction ClassifyClientCommand(const std::string& cmd)
 {
     // ID is local; TX/RX commands preserve the client's PTT variant.
@@ -39,14 +51,16 @@ bool IsPlausibleCatFrame(const std::string& frame)
     return true;
 }
 
+bool IsStatusSetter(const std::string& cmd)
+{
+    return IsFrequencyFrame(cmd) || IsModeFrame(cmd);
+}
+
 std::string CachedStatusReply(const std::string& cmd, const std::string& frequency,
     const std::string& mode, const std::string& info, bool transmitting)
 {
-    const bool haveFrequency = frequency.size() == 14
-        && frequency.compare(0, 2, "FA") == 0 && frequency.back() == ';'
-        && frequency.find_first_not_of("0123456789", 2) == 13;
-    const bool haveMode = mode.size() == 4 && mode.compare(0, 2, "MD") == 0
-        && mode[2] >= '1' && mode[2] <= '5' && mode[3] == ';';
+    const bool haveFrequency = IsFrequencyFrame(frequency);
+    const bool haveMode = IsModeFrame(mode);
     if (cmd == "FA;" && haveFrequency) return frequency;
     if (cmd == "MD;" && haveMode) return mode;
     if (cmd == "IF;" && haveFrequency && haveMode && info.size() == 38

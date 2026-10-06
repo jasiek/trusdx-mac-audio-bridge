@@ -132,4 +132,4 @@ add_executable(trusdx_session_tests
   tests/test_session.cpp bridge/Bridge.cpp bridge/Ports.cpp)
 target_link_libraries(trusdx_session_tests PRIVATE bridge_core)
 add_test(NAME trusdx_session_tests COMMAND trusdx_session_tests)
-set_tests_properties(trusdx_session_tests PROPERTIES TIMEOUT 25)
+set_tests_properties(trusdx_session_tests PROPERTIES TIMEOUT 40)

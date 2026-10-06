@@ -130,6 +130,9 @@ std::string CommandName(const std::string& frame);
 // Rejects frames that are really stray audio bytes.
 bool IsPlausibleCatFrame(const std::string& frame);
 
+// True for a well-formed frequency/mode setter whose value the radio adopts silently.
+bool IsStatusSetter(const std::string& cmd);
+
 // Status from confirmed RX state, with the bridge's commanded PTT.
 // Unsupported commands and missing state return ?; without touching serial audio.
 std::string CachedStatusReply(const std::string& cmd, const std::string& frequency,

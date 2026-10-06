@@ -115,6 +115,9 @@ OSStatus AudioLink::IOProc(AudioObjectID,
     return noErr;
 }
 
+// Process runs on the real-time I/O thread; txPeak_ must not take a lock.
+static_assert(std::atomic<float>::is_always_lock_free, "txPeak_ must be lock-free");
+
 void AudioLink::Process(const AudioBufferList* input, AudioBufferList* output)
 {
     lastCallbackNs_.store(NowNs(), std::memory_order_relaxed);
@@ -125,11 +128,14 @@ void AudioLink::Process(const AudioBufferList* input, AudioBufferList* output)
         const size_t frames = input->mBuffers[0].mDataByteSize / sizeof(float);
         if (txWanted_.load(std::memory_order_relaxed)) {
             txIn_.Push(in, frames);
-            float peak = txPeak_.load(std::memory_order_relaxed);
+            float peak = 0.0f;
             for (size_t i = 0; i < frames; ++i) {
                 peak = std::max(peak, std::fabs(in[i]));
             }
-            txPeak_.store(peak, std::memory_order_relaxed);
+            // Atomic fetch-max, so a concurrent TxPeak() reset isn't overwritten.
+            float cur = txPeak_.load(std::memory_order_relaxed);
+            while (peak > cur && !txPeak_.compare_exchange_weak(cur, peak, std::memory_order_relaxed)) {
+            }
         }
     }
 

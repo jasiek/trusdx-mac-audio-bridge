@@ -31,6 +31,7 @@ int64_t NowMs()
 Bridge::Bridge(const Options& options)
     : options_(options)
     , verbose_(options.verbose)
+    , speaker_(options.speaker)
     , audio_(rxRaw_, txIn_, txWanted_, options.rxRate)
 {
     pty_.SetVerbose(options.verbose);
@@ -41,6 +42,15 @@ void Bridge::SetVerbose(bool enabled)
     pty_.SetVerbose(enabled);
     if (verbose_.exchange(enabled) != enabled) {
         Log("verbose logging: %s", enabled ? "on" : "off");
+    }
+}
+
+void Bridge::SetSpeaker(bool on)
+{
+    if (speaker_.exchange(on) != on) {
+        audioModeChanged_ = true;
+        queueCv_.notify_all();
+        Log("radio: speaker %s", on ? "on" : "off");
     }
 }
 
@@ -144,12 +154,11 @@ BridgeStatus Bridge::Status()
 
 void Bridge::LogStats()
 {
-    static uint64_t lastRx = 0;
     const uint64_t rx = rxBytes_.load();
     Log("stats: radio %s, serial in %.0f B/s, rx rate %.1f Hz, underruns %llu, tx %s",
-        serialFd_ >= 0 ? "connected" : "absent", (rx - lastRx) / 10.0, audio_.EstimatedRxRate(),
+        serialFd_ >= 0 ? "connected" : "absent", (rx - statsLastRx_) / 10.0, audio_.EstimatedRxRate(),
         (unsigned long long)audio_.Underruns(), txActive_ ? "ON" : "off");
-    lastRx = rx;
+    statsLastRx_ = rx;
 }
 
 // ---- CAT client side ------------------------------------------------------
@@ -192,13 +201,13 @@ bool Bridge::OpenRadio()
     std::string error;
     const int fd = OpenSerial(path, &error);
     if (fd < 0) {
-        static std::string lastError;
-        if (error != lastError) {
+        if (error != lastOpenError_) {
             Log("radio: cannot open %s: %s", path.c_str(), error.c_str());
-            lastError = error;
+            lastOpenError_ = error;
         }
         return false;
     }
+    lastOpenError_.clear(); // log the error again if it recurs after a disconnect
 
     serialFd_ = fd;
     serialPath_ = path;
@@ -211,6 +220,7 @@ bool Bridge::OpenRadio()
     lastAudioMs_ = 0;
     initDoneMs_ = 0;
     recoveringAudio_ = false;
+    audioModeChanged_ = false; // InitRadio sends the current mode
     parser_.Reset();
     {
         std::lock_guard<std::mutex> lock(cacheMu_);
@@ -248,8 +258,8 @@ void Bridge::CloseRadio()
         // Do not use the driver's potentially multi-second tcdrain here.
         std::this_thread::sleep_for(20ms);
     }
-    close(serialFd_);
-    serialFd_ = -1;
+    // Clear before close so Enqueue never sees a closed fd as open.
+    close(serialFd_.exchange(-1));
     txActive_ = false;
     forwardToClient_ = false;
 }
@@ -446,8 +456,12 @@ void Bridge::WriterLoop()
     Recovery recovery = Recovery::None;
     int64_t recoveryDeadlineMs = 0;
     int64_t recoveryAudioSinceMs = 0;
+    // Only an end-of-TX reset gets one immediate retry; the watchdog stays rate-limited.
+    bool retryPending = false;
     auto beginRecovery = [&](bool alreadyUnkeyed) {
+        retryPending = false;
         recoveringAudio_ = true;
+        audioModeChanged_ = false; // every reset re-sends the current mode
         lastRecoveryMs = NowMs();
         if (!alreadyUnkeyed) SendToRadio("RX;");
         recovery = Recovery::DisableAudio;
@@ -519,11 +533,18 @@ void Bridge::WriterLoop()
             if (endingTx) {
                 Log("radio: TX ended - resetting serial audio immediately");
                 beginRecovery(true);
+                retryPending = true;
             }
             break;
         }
-        case ClientAction::LocalId:
         case ClientAction::Forward:
+            if (IsStatusSetter(cmd)) {
+                // The radio adopts FA/MD setters without a reply; TX polls use the cache.
+                std::lock_guard<std::mutex> lock(cacheMu_);
+                cache_[CommandName(cmd)] = cmd;
+            }
+            break;
+        case ClientAction::LocalId:
             break;
         }
     };
@@ -549,6 +570,10 @@ void Bridge::WriterLoop()
 
         if (!tx) {
             const int64_t nowMs = NowMs();
+            if (recovery == Recovery::None && audioModeChanged_) {
+                Log("radio: applying speaker mode %s - resetting serial audio", AudioModeCommand());
+                beginRecovery(false);
+            }
             if (recovery == Recovery::None && lastAudioMs_ > 0
                 && nowMs - lastAudioMs_ > 2000
                 && nowMs - rxSinceMs > 1000 && nowMs - lastRecoveryMs > 5000) {
@@ -587,7 +612,15 @@ void Bridge::WriterLoop()
                     Log(resumed ? "radio: receive audio recovered"
                                 : "radio: serial audio reset did not restore samples");
                     recovery = Recovery::None;
-                    recoveringAudio_ = false;
+                    const bool retry = !resumed && retryPending;
+                    retryPending = false;
+                    if (retry) {
+                        // Keep hiding UA replies: the retry follows without a gap.
+                        Log("radio: retrying serial audio reset");
+                        beginRecovery(false);
+                    } else {
+                        recoveringAudio_ = false;
+                    }
                 }
             }
             std::unique_lock<std::mutex> lock(queueMu_);
