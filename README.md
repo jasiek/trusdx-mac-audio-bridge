@@ -58,8 +58,10 @@ The menu shows the last reported radio frequency, audio connection status and
 virtual CAT path. It has Start/Stop Bridge (⌘S), Radio Speaker On, Open at Login,
 Verbose Logging, Show Log (⌘L), About... (application information, copyright and
 licensing), and Quit truSDX Bridge (⌘Q).
-Changing Radio Speaker On restarts a running bridge; toggling Verbose Logging
-takes effect without restarting it. The app remembers the Start/Stop, speaker
+Changing Radio Speaker On and toggling Verbose Logging take effect without
+restarting the bridge, so a connected CAT client keeps its port. A speaker change
+is applied with a serial-audio reset (see below); during TX it waits for the reset
+that follows unkey. The app remembers the Start/Stop, speaker
 and logging choices. Open at Login controls whether macOS launches the app.
 Stopping the bridge releases the serial port, so WSJT-X or a firmware tool can
 use the radio directly again.
@@ -111,6 +113,10 @@ easily if driven too hard.
 --rx-rate HZ       nominal radio receive sample rate (default 7812.5)
 -v, --verbose      log virtual CAT reads/writes, radio CAT and periodic stats
 ```
+
+`--tx-gain` and `--rx-rate` must be numbers greater than zero, and `--tx-timeout`
+whole seconds from 1 to 86400. An invalid value prints an error and the usage
+text, and the bridge exits with status 2.
 
 Autodetection selects the first `/dev/cu.wchusbserial*` match, falling back to
 the first `/dev/cu.usbserial*` match. It does not probe devices to identify the
@@ -188,7 +194,10 @@ commands enter an ordered writer queue when the physical port is open.
 | Serial-audio recovery | `RX;` at the queue head | Absorb the redundant request. |
 | Serial-audio recovery | Other queued commands | Wait until recovery finishes. Later commands remain behind them. |
 
-Normal RX replies refresh the cache. Front-panel changes during TX may remain
+Normal RX replies refresh the cache. A well-formed `FA` or `MD` setter forwarded
+in RX also updates it, because the radio applies these without replying; this
+keeps TX replies correct when a client shifts frequency just before keying (for
+example WSJT-X "Fake It" split). Front-panel changes during TX may remain
 stale until a later RX readback. The displayed frequency also comes from this
 cache; the bridge does not continuously poll it on its own.
 
@@ -224,9 +233,14 @@ recovery finishes. Replies with a `UA` prefix and `?;` errors are hidden from th
 client during recovery. Repeated `RX;` while already receiving does not itself
 trigger a reset.
 
+If this end-of-TX reset gets no samples, the bridge immediately retries once,
+sending `RX;` before the same sequence and keeping replies hidden throughout.
+If the retry also fails, recovery is left to the watchdog below. Watchdog and
+speaker-change resets are not retried immediately.
+
 If RX has previously produced samples and then stalls, the watchdog starts a
-reset after more than two seconds without samples and one second in RX, with
-at least five seconds between recovery attempts. The watchdog sends `RX;`
+reset after more than two seconds without samples and one second in RX, and at
+least five seconds after the previous reset started. The watchdog sends `RX;`
 before the same reset sequence. It does not cover a connection that has never
 produced any sample bytes.
 
