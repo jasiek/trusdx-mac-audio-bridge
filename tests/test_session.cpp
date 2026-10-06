@@ -248,6 +248,26 @@ int main()
             ExpectQuiet(client);
             ExpectQuiet(master);
 
+            // Silent setters update TX status (split "Fake It" shifts VFO, then keys).
+            WriteAll(client, "FA00014076000;", 14);
+            Expect(master, "FA00014076000;");
+            WriteAll(client, "TX0;", 4);
+            Expect(master, "TX0;");
+            WriteAll(client, "FA;IF;", 6);
+            txInfo.replace(2, 11, "00014076000");
+            Expect(client, "FA00014076000;" + txInfo);
+            ExpectQuiet(master);
+            WriteAll(client, "RX;", 3);
+            Expect(master, ";RX;", 400);
+            Expect(master, "UA0;", 150);
+            WriteAll(master, ";UA0;", 5);
+            Expect(master, "UA2;", 350);
+            WriteAll(master, "UA2;", 4);
+            Expect(master, "RX;", 150);
+            WriteAll(master, "US\x80\x81", 4);
+            ExpectQuiet(client);
+            ExpectQuiet(master);
+
             // Speaker toggle switches UA mode in place via a serial audio reset.
             bridge.SetSpeaker(true);
             Expect(master, "RX;", 150);

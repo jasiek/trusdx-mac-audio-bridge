@@ -534,8 +534,14 @@ void Bridge::WriterLoop()
             }
             break;
         }
-        case ClientAction::LocalId:
         case ClientAction::Forward:
+            if (IsStatusSetter(cmd)) {
+                // The radio adopts FA/MD setters without a reply; TX polls use the cache.
+                std::lock_guard<std::mutex> lock(cacheMu_);
+                cache_[CommandName(cmd)] = cmd;
+            }
+            break;
+        case ClientAction::LocalId:
             break;
         }
     };

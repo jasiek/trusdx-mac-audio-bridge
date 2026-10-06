@@ -185,6 +185,18 @@ int main()
     CHECK(CachedStatusReply("RM;", "FA00014074000;", "MD2;", info, true) == "?;");
     CHECK(CachedStatusReply("FA00014075000;", "FA00014074000;", "MD2;", info, true) == "?;");
     CHECK(CachedStatusReply("IF;", "FA00014074000;", "MD2;", info, false) == info);
+    CHECK(IsStatusSetter("FA00014075000;"));
+    for (const char* md : {"MD1;", "MD2;", "MD3;", "MD4;", "MD5;"}) {
+        CHECK(IsStatusSetter(md));
+    }
+    CHECK(!IsStatusSetter("FA;"));
+    CHECK(!IsStatusSetter("MD;"));
+    CHECK(!IsStatusSetter("FA0001407400;"));
+    CHECK(!IsStatusSetter("FA0001407400a;"));
+    CHECK(!IsStatusSetter("MD6;"));
+    CHECK(!IsStatusSetter("MD0;"));
+    CHECK(!IsStatusSetter("IF;"));
+    CHECK(!IsStatusSetter("FA00014074000"));
     TestSampleConversion();
     TestResamplerRx();
     TestResamplerTx();
