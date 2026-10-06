@@ -259,8 +259,8 @@ void Bridge::CloseRadio()
         // Do not use the driver's potentially multi-second tcdrain here.
         std::this_thread::sleep_for(20ms);
     }
-    close(serialFd_);
-    serialFd_ = -1;
+    // Clear before close so Enqueue never sees a closed fd as open.
+    close(serialFd_.exchange(-1));
     txActive_ = false;
     forwardToClient_ = false;
 }

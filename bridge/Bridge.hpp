@@ -95,7 +95,7 @@ private:
     std::string error_;
 
     // Per radio connection.
-    int serialFd_ = -1;
+    std::atomic<int> serialFd_{-1}; // the pty thread checks it in Enqueue
     std::string serialPath_;
     std::thread reader_;
     std::thread writer_;
