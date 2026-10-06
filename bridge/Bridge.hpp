@@ -121,6 +121,10 @@ private:
 
     std::atomic<uint64_t> rxBytes_{0};
     std::atomic<uint64_t> txBytes_{0};
+
+    // Run thread only.
+    uint64_t statsLastRx_ = 0;  // rxBytes_ at the previous stats line
+    std::string lastOpenError_; // last "cannot open" error logged, to avoid repeats
 };
 
 } // namespace trusdx

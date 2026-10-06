@@ -154,12 +154,11 @@ BridgeStatus Bridge::Status()
 
 void Bridge::LogStats()
 {
-    static uint64_t lastRx = 0;
     const uint64_t rx = rxBytes_.load();
     Log("stats: radio %s, serial in %.0f B/s, rx rate %.1f Hz, underruns %llu, tx %s",
-        serialFd_ >= 0 ? "connected" : "absent", (rx - lastRx) / 10.0, audio_.EstimatedRxRate(),
+        serialFd_ >= 0 ? "connected" : "absent", (rx - statsLastRx_) / 10.0, audio_.EstimatedRxRate(),
         (unsigned long long)audio_.Underruns(), txActive_ ? "ON" : "off");
-    lastRx = rx;
+    statsLastRx_ = rx;
 }
 
 // ---- CAT client side ------------------------------------------------------
@@ -202,13 +201,13 @@ bool Bridge::OpenRadio()
     std::string error;
     const int fd = OpenSerial(path, &error);
     if (fd < 0) {
-        static std::string lastError;
-        if (error != lastError) {
+        if (error != lastOpenError_) {
             Log("radio: cannot open %s: %s", path.c_str(), error.c_str());
-            lastError = error;
+            lastOpenError_ = error;
         }
         return false;
     }
+    lastOpenError_.clear(); // log the error again if it recurs after a disconnect
 
     serialFd_ = fd;
     serialPath_ = path;
