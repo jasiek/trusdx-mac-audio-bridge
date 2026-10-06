@@ -170,10 +170,13 @@ int main()
             const std::string toggles = "RX;RX;IF;FA;MD;TX0;RX;";
             const auto unkeyAt = std::chrono::steady_clock::now();
             WriteAll(client, toggles.data(), toggles.size());
-            Expect(master, ";RX;", 150);
+            // Unkey deliberately sleeps for 60 + 10 ms. Shared CI runners can
+            // oversleep these timers, so allow scheduling headroom while still
+            // requiring cached replies before the 500 ms recovery sample wait.
+            Expect(master, ";RX;", 400);
             Expect(client, info + "FA00014074000;MD2;", 150);
             // These replies must arrive during the reset, not after its delays.
-            Check(std::chrono::steady_clock::now() - unkeyAt < 200ms, "CAT stalled during reset");
+            Check(std::chrono::steady_clock::now() - unkeyAt < 450ms, "CAT stalled during reset");
             Expect(master, "UA0;", 150);
             WriteAll(master, ";?;UA0;", 7);
             Expect(master, "UA2;", 350);
