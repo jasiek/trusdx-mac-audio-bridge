@@ -72,10 +72,10 @@ static void Expect(int fd, const std::string& expected, int timeoutMs = 2000)
     }
 }
 
-static void ExpectQuiet(int fd)
+static void ExpectQuiet(int fd, int timeoutMs = 100)
 {
     pollfd p = {fd, POLLIN, 0};
-    Check(poll(&p, 1, 100) == 0, "unexpected bytes (US, filler, duplicate PTT or UA)");
+    Check(poll(&p, 1, timeoutMs) == 0, "unexpected bytes (US, filler, duplicate PTT or UA)");
 }
 
 int main()
@@ -196,8 +196,39 @@ int main()
             Expect(client, info, 150); // RX flag, even during the wait for samples.
             ExpectQuiet(client);
 
-            // The watchdog retries a failed immediate reset after five seconds.
-            Expect(master, "RX;", 5500);
+            // A failed end-of-TX reset is retried at once, unkeying first.
+            Expect(master, "RX;", 800);
+            WriteAll(master, "?;", 2);
+            Expect(master, "UA0;", 150);
+            WriteAll(master, "UA0;", 4);
+            Expect(master, "UA2;", 350);
+            WriteAll(master, "UA2;", 4);
+            Expect(master, "RX;", 150);
+            WriteAll(master, "US\x80\x81", 4);
+            ExpectQuiet(client); // Retry replies stay internal too.
+            ExpectQuiet(master);
+
+            // Only one immediate retry: if it fails too, the watchdog takes over.
+            WriteAll(client, "TX0;", 4);
+            Expect(master, "TX0;");
+            WriteAll(client, "RX;", 3);
+            Expect(master, ";RX;", 400);
+            Expect(master, "UA0;", 150);
+            WriteAll(master, ";UA0;", 5);
+            Expect(master, "UA2;", 350);
+            WriteAll(master, "UA2;", 4);
+            Expect(master, "RX;", 150);
+            Expect(master, "RX;", 800); // Withheld samples: the retry starts.
+            WriteAll(master, "?;", 2);
+            Expect(master, "UA0;", 150);
+            WriteAll(master, "UA0;", 4);
+            Expect(master, "UA2;", 350);
+            WriteAll(master, "UA2;", 4);
+            Expect(master, "RX;", 150);
+            ExpectQuiet(client);
+            ExpectQuiet(master, 3500); // The retry also times out, without a third reset.
+            // The watchdog resets five seconds after the retry began.
+            Expect(master, "RX;", 2000);
             WriteAll(master, "?;", 2);
             Expect(master, "UA0;", 150);
             WriteAll(master, "UA0;", 4);

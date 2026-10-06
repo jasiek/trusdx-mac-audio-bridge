@@ -456,7 +456,10 @@ void Bridge::WriterLoop()
     Recovery recovery = Recovery::None;
     int64_t recoveryDeadlineMs = 0;
     int64_t recoveryAudioSinceMs = 0;
+    // Only an end-of-TX reset gets one immediate retry; the watchdog stays rate-limited.
+    bool retryPending = false;
     auto beginRecovery = [&](bool alreadyUnkeyed) {
+        retryPending = false;
         recoveringAudio_ = true;
         audioModeChanged_ = false; // every reset re-sends the current mode
         lastRecoveryMs = NowMs();
@@ -530,6 +533,7 @@ void Bridge::WriterLoop()
             if (endingTx) {
                 Log("radio: TX ended - resetting serial audio immediately");
                 beginRecovery(true);
+                retryPending = true;
             }
             break;
         }
@@ -608,7 +612,15 @@ void Bridge::WriterLoop()
                     Log(resumed ? "radio: receive audio recovered"
                                 : "radio: serial audio reset did not restore samples");
                     recovery = Recovery::None;
-                    recoveringAudio_ = false;
+                    const bool retry = !resumed && retryPending;
+                    retryPending = false;
+                    if (retry) {
+                        // Keep hiding UA replies: the retry follows without a gap.
+                        Log("radio: retrying serial audio reset");
+                        beginRecovery(false);
+                    } else {
+                        recoveringAudio_ = false;
+                    }
                 }
             }
             std::unique_lock<std::mutex> lock(queueMu_);
