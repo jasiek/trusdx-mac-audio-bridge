@@ -112,6 +112,7 @@ public:
 
     bool Running() const { return bridge_ != nullptr; }
     void SetVerbose(bool enabled) { if (bridge_) bridge_->SetVerbose(enabled); }
+    void SetSpeaker(bool on) { if (bridge_) bridge_->SetSpeaker(on); }
     trusdx::BridgeStatus Status() { return bridge_ ? bridge_->Status() : trusdx::BridgeStatus{}; }
 
 private:
@@ -244,10 +245,10 @@ NSString* LogPath()
 - (void)toggleSpeaker:(id)sender
 {
     NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
-    [defaults setBool:![defaults boolForKey:kSpeakerKey] forKey:kSpeakerKey];
-    if (_runner.Running()) {
-        [self startBridge]; // the streaming mode is chosen when the radio connects
-    }
+    const bool on = ![defaults boolForKey:kSpeakerKey];
+    [defaults setBool:on forKey:kSpeakerKey];
+    // Switch in place: restarting would replace the CAT pty under a connected client.
+    _runner.SetSpeaker(on || _options.speaker);
     [self refresh];
 }
 

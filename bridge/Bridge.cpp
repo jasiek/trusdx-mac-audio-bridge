@@ -31,6 +31,7 @@ int64_t NowMs()
 Bridge::Bridge(const Options& options)
     : options_(options)
     , verbose_(options.verbose)
+    , speaker_(options.speaker)
     , audio_(rxRaw_, txIn_, txWanted_, options.rxRate)
 {
     pty_.SetVerbose(options.verbose);
@@ -41,6 +42,15 @@ void Bridge::SetVerbose(bool enabled)
     pty_.SetVerbose(enabled);
     if (verbose_.exchange(enabled) != enabled) {
         Log("verbose logging: %s", enabled ? "on" : "off");
+    }
+}
+
+void Bridge::SetSpeaker(bool on)
+{
+    if (speaker_.exchange(on) != on) {
+        audioModeChanged_ = true;
+        queueCv_.notify_all();
+        Log("radio: speaker %s", on ? "on" : "off");
     }
 }
 
@@ -211,6 +221,7 @@ bool Bridge::OpenRadio()
     lastAudioMs_ = 0;
     initDoneMs_ = 0;
     recoveringAudio_ = false;
+    audioModeChanged_ = false; // InitRadio sends the current mode
     parser_.Reset();
     {
         std::lock_guard<std::mutex> lock(cacheMu_);
@@ -448,6 +459,7 @@ void Bridge::WriterLoop()
     int64_t recoveryAudioSinceMs = 0;
     auto beginRecovery = [&](bool alreadyUnkeyed) {
         recoveringAudio_ = true;
+        audioModeChanged_ = false; // every reset re-sends the current mode
         lastRecoveryMs = NowMs();
         if (!alreadyUnkeyed) SendToRadio("RX;");
         recovery = Recovery::DisableAudio;
@@ -549,6 +561,10 @@ void Bridge::WriterLoop()
 
         if (!tx) {
             const int64_t nowMs = NowMs();
+            if (recovery == Recovery::None && audioModeChanged_) {
+                Log("radio: applying speaker mode %s - resetting serial audio", AudioModeCommand());
+                beginRecovery(false);
+            }
             if (recovery == Recovery::None && lastAudioMs_ > 0
                 && nowMs - lastAudioMs_ > 2000
                 && nowMs - rxSinceMs > 1000 && nowMs - lastRecoveryMs > 5000) {

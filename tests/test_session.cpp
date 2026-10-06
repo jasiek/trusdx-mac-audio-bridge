@@ -247,6 +247,20 @@ int main()
             WriteAll(master, "US\x80\x81", 4);
             ExpectQuiet(client);
             ExpectQuiet(master);
+
+            // Speaker toggle switches UA mode in place via a serial audio reset.
+            bridge.SetSpeaker(true);
+            Expect(master, "RX;", 150);
+            Expect(master, "UA0;", 150);
+            WriteAll(master, ";UA0;", 5);
+            Expect(master, "UA1;", 350);
+            WriteAll(master, "UA1;", 4);
+            Expect(master, "RX;", 150);
+            WriteAll(master, "US\x80\x81", 4);
+            ExpectQuiet(client); // Mode-change acknowledgements stay internal.
+            ExpectQuiet(master);
+            bridge.SetSpeaker(true);
+            ExpectQuiet(master); // Unchanged mode: no reset.
         } catch (const std::exception& e) {
             std::fprintf(stderr, "FAIL: %s\n", e.what());
             failures = 1;
